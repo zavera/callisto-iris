@@ -12,6 +12,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -25,6 +26,10 @@ public class PgTransport implements IrisTransport {
     private final Map<String, TransportListener> channelRegistry = new ConcurrentHashMap<>();
     private final AtomicBoolean connected = new AtomicBoolean(false);
     private final ScheduledExecutorService reconnectScheduler = Executors.newSingleThreadScheduledExecutor();
+
+    // Notifications arrive on pgjdbc-ng I/O threads — dispatch off that thread
+    // immediately to avoid blocking the notification pipeline (per section 9.2 of pgjdbc-ng user guide)
+    private final ExecutorService dispatchExecutor = Executors.newCachedThreadPool();
 
     private PGConnection connection;
 
@@ -48,12 +53,15 @@ public class PgTransport implements IrisTransport {
 
             connection = ds.getConnection().unwrap(PGConnection.class);
 
-            connection.addNotificationListener(new PGNotificationListener() {
+            // Section 9.2 — Asynchronous Notifications (pgjdbc-ng user guide)
+            // addListener() registers for all channels; closed() fires on unexpected disconnect
+            connection.addListener(new PGNotificationListener() {
                 @Override
                 public void notification(int processId, String channelName, String payload) {
                     TransportListener listener = channelRegistry.get(channelName);
                     if (listener != null) {
-                        listener.onEvent(channelName, payload);
+                        // dispatch off the I/O thread — long or blocking ops here degrade performance
+                        dispatchExecutor.submit(() -> listener.onEvent(channelName, payload));
                     }
                 }
 
@@ -124,6 +132,7 @@ public class PgTransport implements IrisTransport {
     @Override
     public void disconnect() {
         reconnectScheduler.shutdownNow();
+        dispatchExecutor.shutdownNow();
         try {
             if (connection != null && !connection.isClosed()) {
                 connection.close();
