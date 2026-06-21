@@ -54,8 +54,8 @@ public class PgTransport implements IrisTransport {
             connection = ds.getConnection().unwrap(PGConnection.class);
 
             // Section 9.2 — Asynchronous Notifications (pgjdbc-ng user guide)
-            // addListener() registers for all channels; closed() fires on unexpected disconnect
-            connection.addListener(new PGNotificationListener() {
+            // addNotificationListener() registers for all channels; closed() fires on unexpected disconnect
+            connection.addNotificationListener(new PGNotificationListener() {
                 @Override
                 public void notification(int processId, String channelName, String payload) {
                     TransportListener listener = channelRegistry.get(channelName);
